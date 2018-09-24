@@ -15,7 +15,7 @@
 import logging
 import requests
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 __all__ = ['NSOConnection']
 
@@ -38,6 +38,8 @@ def _format_error_message(response):
         message = response.json()['errors']['error'][0]['error-message']
     except KeyError:
         message = 'Failed to make request or error not returned as expected'
+    except ValueError:
+        message = 'No message, not json'
     return 'Error code %s: %s' % (response.status_code,
                                   message)
 
@@ -61,6 +63,10 @@ class NSOConnection(object):
             params=params)
         try:
             response.raise_for_status()
+
+            if response.status_code != 200:
+                logger.warning('Unexpected status code for GET: {}'.format(response.status_code))
+
             return response.json()
         except ValueError:
             logger.warning('Empty/Non valid JSON response')
@@ -69,7 +75,7 @@ class NSOConnection(object):
             logger.error('Failed on request %s', url)
             message = _format_error_message(response)
             logger.error(message)
-            raise
+            raise Exception(_format_error_message(response))
 
     def get_plain(self, resource_type, media_type, path=None, params=None):
         url = _format_url(self.host, resource_type, path, self.ssl)
@@ -80,11 +86,29 @@ class NSOConnection(object):
             params=params)
         try:
             response.raise_for_status()
+
+            if response.status_code != 200:
+                logger.warning('Unexpected status code for GET: {}'.format(response.status_code))
+
             return response.text
         except requests.HTTPError:
             logger.error('Failed on request %s', url)
             logger.error(_format_error_message(response))
             raise
+
+    def head(self, resource_type, media_type, path=None, params=None):
+        url = _format_url(self.host, resource_type, path, self.ssl)
+        response = self.session.head(
+            url,
+            verify=self.verify_ssl,
+            headers=self._get_headers(media_type),
+            params=params)
+        try:
+            return response.status_code == 200
+        except requests.HTTPError:
+            logger.error('Failed on request %s', url)
+            logger.error(_format_error_message(response))
+            raise Exception(_format_error_message(response))
 
     def post(self, resource_type, media_type, data,
              path=None, params=None):
@@ -101,26 +125,27 @@ class NSOConnection(object):
             params=params)
         try:
             response.raise_for_status()
-            if response.status_code == 201:
+
+            if response.status_code not in (200, 201, 204):
+                logger.warning('Unexpected status code for POST: {}'.format(response.status_code))
+
+            if response.status_code in (201, 204):
                 return True
+
+            return response.json()
+        except ValueError:
+            logger.warning('Empty/Non valid JSON response')
+            return
         except requests.HTTPError:
             logger.error('Failed on request %s', url)
             logger.error(_format_error_message(response))
-            raise
-        # Handle status code != 201 : NSO doens't always return json, it can also return nothing at all
-        logger.warning('Unexpected status code for POST: {}'.format(response.status_code))
-        try:
-            return response.json()
-        except ValueError:
-            return
+            raise Exception(_format_error_message(response))
 
     def put(self, resource_type, media_type, data,
             path=None, params=None):
 
         headers = self._get_headers(media_type)
         headers['Content-Type'] = 'application/vnd.yang.data+json'
-
-
 
         url = _format_url(self.host, resource_type, path, self.ssl)
         response = self.session.put(
@@ -131,18 +156,20 @@ class NSOConnection(object):
             params=params)
         try:
             response.raise_for_status()
-            if response.status_code == 204:
+            if response.status_code not in (200, 201, 204):
+                logger.warning('Unexpected status code for PUT: {}'.format(response.status_code))
+
+            if response.status_code in (201, 204):
                 return True
+
+            return response.json()
+        except ValueError:
+            logger.warning('Empty/Non valid JSON response')
+            return
         except requests.HTTPError:
             logger.error('Failed on request %s', url)
             logger.error(_format_error_message(response))
-            raise
-        # Handle status code != 204 : NSO doens't always return json, it can also return nothing at all
-        logger.warning('Unexpected status code for PUT: {}'.format(response.status_code))
-        try:
-            return response.json()
-        except ValueError:
-            return
+            raise Exception(_format_error_message(response))
 
     def delete(self, resource_type, media_type, data=None,
                path=None, params=None):
@@ -155,18 +182,16 @@ class NSOConnection(object):
             params=params)
         try:
             response.raise_for_status()
-            if response.status_code == 204:
-                return True
+            if response.status_code != 204:
+                logger.warning('Unexpected status code for PUT: {}'.format(response.status_code))
+
+            return True
         except requests.HTTPError:
             logger.error('Failed on request %s', url)
             logger.error(_format_error_message(response))
-            raise
-        # Handle status code != 204 : NSO doens't always return json, it can also return nothing at all
-        logger.warning('Unexpected status code for PUT: {}'.format(response.status_code))
-        try:
-            return response.json()
-        except ValueError:
-            return
+            raise Exception(_format_error_message(response))
+
+    # TODO: missing OPTIONS, PATCH
 
     def _get_headers(self, media_type):
         return {
